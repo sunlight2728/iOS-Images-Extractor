@@ -8,16 +8,16 @@
 
 #import "MainViewController.h"
 
-#pragma mark - libs
+#pragma mark - Vendors
 #import "ZipArchive.h"
 
 
-#pragma mark - models
+#pragma mark - Models
 #import "XMFileItem.h"
 
-#pragma mark - views
+#pragma mark - Views
 #import "XMDragView.h"
-
+#import "NSAlert+XM.h"
 
 @interface MainViewController () <XMDragViewDelegate, NSTableViewDataSource, NSTableViewDelegate>
 
@@ -94,12 +94,43 @@
 
 @implementation MainViewController
 
+static void distributedNotificationCallback(CFNotificationCenterRef center,
+                     void *observer,
+                     CFStringRef name,
+                     const void *object,
+                     CFDictionaryRef userInfo)
+{
+    NSDictionary *userInfoObject = (__bridge NSDictionary *)(userInfo);
+    NSString *pname = [userInfoObject objectForKey:@"name"];
+    [(__bridge MainViewController *)observer setStatusString:[NSString stringWithFormat:@"Extracting Assets.car %@", pname]];
+}
 
-#pragma mark - life cycel
+- (void)setupNotification {
+    
+    CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
+    
+    CFNotificationSuspensionBehavior behavior = CFNotificationSuspensionBehaviorDeliverImmediately;
+    
+    CFNotificationCenterAddObserver(distributedCenter,
+                                    (__bridge const void *)(self),
+                                    distributedNotificationCallback,
+                                    (__bridge const void *)([NSBundle mainBundle].bundleIdentifier),
+                                    NULL,
+                                    behavior);
+}
+
+#pragma mark - Lifecycle
+
+- (void)dealloc {
+    CFNotificationCenterRef distributedCenter = CFNotificationCenterGetDistributedCenter();
+     CFNotificationCenterRemoveObserver(distributedCenter, (__bridge const void *)(self), (__bridge const void *)([NSBundle mainBundle].bundleIdentifier), NULL);
+}
 
 - (void)awakeFromNib
 {
     self.dragView.delegate = self;
+    
+    [self setupNotification];
 
     // 获取CARExtractor执行程序路径
     // 1,先从Resource目录查找
@@ -130,21 +161,25 @@
  */
 - (void)setStatusString:(NSString*)stauts
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self.statusLabel setStringValue:stauts];
-    });
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self setStatusString:stauts];
+        });
+        return;
+    }
+    
+    [self.statusLabel setStringValue:stauts];
 }
 
 
 
 
 
-#pragma mark - event response
+#pragma mark - Event Response
 
 /**
  *  响应按钮点击
  *
- *  @param sender <#sender description#>
  */
 - (IBAction)clickButton:(NSButton*)sender {
     
@@ -161,22 +196,40 @@
             [[NSWorkspace sharedWorkspace] activateFileViewerSelectingURLs:fileURLs];
         }
         else {
-            NSAlert *alert = [NSAlert alertWithMessageText:@"No Output" defaultButton:@"OK" alternateButton:nil otherButton:nil informativeTextWithFormat:@"There is no output."];
-            [alert beginSheetModalForWindow:self.view.window completionHandler:nil];
+            
+            [[NSAlert xm_alertWithMessageText:@"No Output" informativeText:@"There is no output." defaultButton:nil] beginSheetModalForWindow:self.view.window completionHandler:nil];
         }
         
 
     }
     else if (sender.tag == 400) {// About
-        
-        [[NSApplication sharedApplication].delegate performSelector:NSSelectorFromString(@"showAboutWindow:") withObject:nil];
+        NSMenu * menu = [[NSMenu alloc] initWithTitle:@"More Options"];
+        {
+            NSMenuItem *installOrRemovePluginItem = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"%@ QLCARFiles QuickLook Plugin", ([[NSFileManager defaultManager] fileExistsAtPath:[self.class QuickLookpluginInstallLocation]] ? @"Remove" : @"Install")] action:@selector(clickMenuItem:) keyEquivalent:@""];
+            installOrRemovePluginItem.target = self;
+            installOrRemovePluginItem.tag = 1000;
+            
+            NSMenuItem *checkForUpdatesItem = [[NSMenuItem alloc] initWithTitle:@"Check for Updates" action:@selector(clickMenuItem:) keyEquivalent:@""];
+            checkForUpdatesItem.target = self;
+            checkForUpdatesItem.tag = 2000;
+            
+            NSMenuItem * aboutItem = [[NSMenuItem alloc] initWithTitle:@"About" action:@selector(clickMenuItem:) keyEquivalent:@""];
+            aboutItem.target = self;
+            aboutItem.tag = 9001;
+            
+            [menu addItem:installOrRemovePluginItem];
+            [menu addItem:[NSMenuItem separatorItem]];
+            [menu addItem:checkForUpdatesItem];
+            [menu addItem:[NSMenuItem separatorItem]];
+            [menu addItem:aboutItem];
+            
+            [NSMenu popUpContextMenu:menu withEvent:[NSApplication sharedApplication].currentEvent forView:sender];
+        }
     }
     else if (sender.tag == 200) {// Start
         
         if (self.dragFileList.count < 1) {
-            NSAlert *alert = [NSAlert alertWithMessageText:@"Error" defaultButton:@"OK" alternateButton:nil otherButton:nil informativeTextWithFormat:@"Drag files into window first."];
-            [alert beginSheetModalForWindow:self.view.window completionHandler:nil];
-            
+            [[NSAlert xm_alertWithMessageText:@"Error" informativeText:@"Drag files into window first." defaultButton:nil] beginSheetModalForWindow:self.view.window completionHandler:nil];
             return;
         }
         
@@ -216,10 +269,9 @@
                     
                     XMFileItem *fileItem = carArray[i];
                     
-                    NSString *outputPath = [existCarPath stringByAppendingPathComponent:[NSString stringWithFormat:@"car_images_%@", [MainViewController getRandomStringWithCount:5]
-                                                                                         ]];
-                    [self setStatusString:[NSString stringWithFormat:@"Processing %@ ...", fileItem.fileName]];
-                    [self doCarFilesWithPath:fileItem.filePath outputPath:outputPath];
+                    NSString *outputPath = [existCarPath stringByAppendingPathComponent:[NSString stringWithFormat:@"car_images_%@", [MainViewController getRandomStringWithCount:5]]];
+//                    [self setStatusString:[NSString stringWithFormat:@"Processing %@ ...", fileItem.fileName]];
+                    [self exportCarFileAtPath:fileItem.filePath outputPath:outputPath tag:nil];
                 }
             }
 
@@ -242,14 +294,107 @@
                 [self.allFileList removeAllObjects];
             });
         });
+    }
+}
+
+
+- (void)clickMenuItem:(NSMenuItem *)sender {
+    
+    if (sender.tag == 1000) {
+        NSString *destPath = [self.class QuickLookpluginInstallLocation];
+        NSString *informativeText = nil;
+        if ([[NSFileManager defaultManager] fileExistsAtPath:destPath]) {
+            [self.class excuteShellScript:[NSString stringWithFormat:@"rm -rf %@;qlmanage -r;", destPath.xm_shellPath]];
+            informativeText = @"Remove QLCARFiles successfully.";
+        } else {
+            NSString *qlgeneratorSourcePath = [[NSBundle mainBundle].resourcePath stringByAppendingPathComponent:@"QLCARFiles.qlgenerator"];
+            [self.class excuteShellScript:[NSString stringWithFormat:@"xattr -c -r %@;cp -r %@ %@;qlmanage -r;", qlgeneratorSourcePath.xm_shellPath, qlgeneratorSourcePath.xm_shellPath, destPath.xm_shellPath]];
+            informativeText = @"Install QLCARFiles successfully, if QuickLook plugins not woking, you can try to log out macOS, then log in back.";
+        }
         
+        [[NSAlert xm_alertWithMessageText:@"macOS Quick Look Plugin" informativeText:informativeText defaultButton:nil] beginSheetModalForWindow:self.view.window completionHandler:nil];
         
-        
+    } else if (sender.tag == 2000) {
+        [self checkForUpdates:YES];
+    } else if (sender.tag == 9001) {
+        [[NSApplication sharedApplication].delegate performSelector:NSSelectorFromString(@"showAboutWindow:") withObject:nil];
     }
     
     
 }
 
+#pragma mark - Private Method
++ (NSString *)QuickLookpluginInstallLocation {
+    NSString *location = [@"~/Library/QuickLook/QLCARFiles.qlgenerator" stringByExpandingTildeInPath];
+    return location;
+}
+
++ (void)excuteShellScript:(NSString *)script
+{
+    // 初始化并设置shell路径
+    NSTask *task = [[NSTask alloc] init];
+    [task setLaunchPath: @"/bin/bash"];
+    // -c 用来执行string-commands（命令字符串），也就说不管后面的字符串里是什么都会被当做shellcode来执行
+    NSArray *arguments = [NSArray arrayWithObjects: @"-c", script, nil];
+    [task setArguments: arguments];
+    
+    // 新建输出管道作为Task的输出
+    NSPipe *pipe = [NSPipe pipe];
+    [task setStandardOutput: pipe];
+    
+    // 开始task
+    NSFileHandle *file = [pipe fileHandleForReading];
+    [task launch];
+    
+    // 获取运行结果
+    NSData *data = [file readDataToEndOfFile];
+    NSString *output = [[NSString alloc] initWithData: data encoding: NSUTF8StringEncoding];
+    
+    XMLog(@"%@", output);
+}
+
+#pragma mark - Public Method
+
+- (void)checkForUpdates:(BOOL)manualCheck {
+    [[[NSURLSession sharedSession] dataTaskWithURL:[NSURL URLWithString:@"https://raw.githubusercontent.com/devcxm/iOS-Images-Extractor/pages/appfiles/appinfos.json"] completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable error) {
+        if (!error && data) {
+            NSDictionary *JSONObject = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([JSONObject isKindOfClass:[NSDictionary class]] && JSONObject.count > 3) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    NSString *appVersion = [[NSBundle mainBundle].infoDictionary objectForKey:@"CFBundleShortVersionString"];
+                    NSString *latestVersion = [JSONObject objectForKey:@"version"];
+                    
+                    if ([appVersion compare:latestVersion options:NSNumericSearch] == NSOrderedAscending) {
+                        NSAlert *updateAlert = [[NSAlert alloc] init];
+                        updateAlert.messageText = @"New Update Available";
+                        updateAlert.informativeText = [JSONObject objectForKey:@"changelog"];
+                        [updateAlert addButtonWithTitle:@"Download"];
+                        [updateAlert addButtonWithTitle:@"Close"];
+                        __weak typeof(updateAlert) weakAlert = updateAlert;
+                        [updateAlert beginSheetModalForWindow:self.view.window completionHandler:^(NSModalResponse returnCode) {
+                            if (weakAlert.buttons.firstObject.tag == returnCode) {
+                                [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:[JSONObject objectForKey:@"app_update_url"]]];
+                            }
+                        }];
+                        
+                    } else {
+                        if (manualCheck) {
+                            [[NSAlert xm_alertWithMessageText:@"Update" informativeText:@"No update available." defaultButton:nil] beginSheetModalForWindow:self.view.window completionHandler:nil];
+                        }
+                    }
+                });
+                
+            }
+        } else {
+            if (manualCheck) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [[NSAlert xm_alertWithMessageText:@"Update" informativeText:@"Failed to check for updates." defaultButton:nil] beginSheetModalForWindow:self.view.window completionHandler:nil];
+                });
+            }
+            
+        }
+    }] resume];
+}
 
 #pragma mark - XMDragViewDelegate
 
@@ -315,7 +460,7 @@
     
 }
 
-#pragma mark - business
+#pragma mark - Extract Methods
 
 /**
  *  遍历获取拖进来的所有的文件
@@ -419,8 +564,17 @@
     
     for (int i = 0; i < carArrayM.count; ++i) {// 处理car文件
          XMFileItem *fileItem = carArrayM[i];
-        [self setStatusString:[NSString stringWithFormat:@"Processing %@ ...", fileItem.fileName]];
-        [self doCarFilesWithPath:fileItem.filePath outputPath:[outputPath stringByAppendingPathComponent:@"car_images"]];
+//        [self setStatusString:[NSString stringWithFormat:@"Processing %@ ...", fileItem.fileName]];
+        NSString *tag = nil;
+        // ipa安装包不只1个car文件时，放在不同的文件夹
+        if (carArrayM.count > 1) {
+            NSString *filePath = fileItem.filePath;
+            if ([[filePath stringByDeletingLastPathComponent].pathExtension isEqualToString:@"app"]) {
+                tag = @"AppRoot";
+            }
+        }
+        
+        [self exportCarFileAtPath:fileItem.filePath outputPath:[outputPath stringByAppendingPathComponent:@"car_images"] tag:tag];
     }
     
 }
@@ -443,10 +597,10 @@
     NSData *saveData = nil;
     
     if ([extension isEqualToString:@"png"]) {
-        saveData = [self imageDataWithImage:tmpImage bitmapImageFileType:NSPNGFileType];
+        saveData = [self imageDataWithImage:tmpImage bitmapImageFileType:NSBitmapImageFileTypePNG];
     }
     else if ([extension isEqualToString:@"jpg"]){
-        saveData = [self imageDataWithImage:tmpImage bitmapImageFileType:NSJPEGFileType];
+        saveData = [self imageDataWithImage:tmpImage bitmapImageFileType:NSBitmapImageFileTypeJPEG];
     }
     
     // 写入新文件
@@ -466,7 +620,7 @@
 - (NSData*)imageDataWithImage:(NSImage*)image bitmapImageFileType:(NSBitmapImageFileType)fileType
 {
     NSBitmapImageRep *rep = [NSBitmapImageRep imageRepWithData:[image TIFFRepresentation]];
-    return [rep representationUsingType:fileType properties:nil];
+    return [rep representationUsingType:fileType properties:@{}];
 }
 
 /**
@@ -475,52 +629,38 @@
  *  @param path       Assets.car路径
  *  @param outputPath 保存路径
  */
-- (void)doCarFilesWithPath:(NSString*)path outputPath:(NSString*)outputPath
-{
-    
+- (void)exportCarFileAtPath:(NSString*)path outputPath:(NSString*)outputPath tag:(NSString *)tag {
     // 判断CARExtractor处理程序是否存在
     if (self.carExtractorLocation.length < 1) {
         dispatch_sync(dispatch_get_main_queue(), ^{
-            NSAlert *alert = [NSAlert alertWithMessageText:@"Error" defaultButton:@"OK" alternateButton:nil otherButton:nil informativeTextWithFormat:@"Can't find CARExtractor"];
-            [alert beginSheetModalForWindow:self.view.window completionHandler:nil];
+            [[NSAlert xm_alertWithMessageText:@"Error" informativeText:@"Can't find CARExtractor." defaultButton:nil] beginSheetModalForWindow:self.view.window completionHandler:nil];
         });
         
         return;
     }
     
-    // 以下源代码来自https://github.com/Marxon13/iOS-Asset-Extractor
+    if (tag.length == 0) {
+        NSString *bundleName = [path stringByDeletingLastPathComponent].lastPathComponent;
+        if ([bundleName.pathExtension caseInsensitiveCompare:@"bundle"] == NSOrderedSame) {
+            tag = [bundleName stringByReplacingOccurrencesOfString:@"." withString:@"_"];
+        }
+    }
     
-    //Create the task to run the process
+    if (tag.length > 0) {
+        outputPath = [outputPath stringByAppendingPathComponent:tag];
+    }
+    
+    
     NSTask *task = [[NSTask alloc] init];
     [task setLaunchPath:self.carExtractorLocation];
     
-    NSArray *arguments = @[@"-i", path, @"-o", outputPath];
+    NSArray *arguments = @[path, outputPath, [NSString stringWithFormat:@"--DistributedNotificationName=%@", [NSBundle mainBundle].bundleIdentifier]];
     [task setArguments:arguments];
     
-    //Handle output
-    NSPipe *pipe = [[NSPipe alloc] init];
-    task.standardOutput = pipe;
     
-    [pipe.fileHandleForReading waitForDataInBackgroundAndNotify];
-    [[NSNotificationCenter defaultCenter] addObserverForName:NSFileHandleDataAvailableNotification object:[pipe fileHandleForReading] queue:nil usingBlock:^(NSNotification *notification){
-//        NSData *output = [[pipe fileHandleForReading] availableData];
-//        NSString *outString = [[NSString alloc] initWithData:output encoding:NSUTF8StringEncoding];
-//        XMLog(@"ddddddddd%@", outString);
-//        if (outputPath.length > 0) {
-//            [self setStatusString:outString];
-//        }
-        
-        [[pipe fileHandleForReading] waitForDataInBackgroundAndNotify];
-    }];
-    
-    //Run the task
     [task launch];
     [task waitUntilExit];
-    
-    [[NSNotificationCenter defaultCenter] removeObserver:nil name:NSFileHandleDataAvailableNotification object:[pipe fileHandleForReading]];
-    
 }
-
 
 
 /**
@@ -528,8 +668,6 @@
  *
  *  @param path           遍历路径
  *  @param extensionArray 包含的扩展名
- *
- *  @return <#return value description#>
  */
 + (NSArray*)getFileListWithPath:(NSString*)path extensions:(NSArray*)extensionArray
 {
@@ -582,7 +720,7 @@
     
     
     if (err) {
-        XMLog(@"come here <#identifier#> %@ ...", err.localizedDescription);
+        XMLog(@"come here %@ ...", err.localizedDescription);
     }
 }
 
@@ -590,9 +728,6 @@
 /**
  *  获取随机字符串
  *
- *  @param count <#count description#>
- *
- *  @return <#return value description#>
  */
 + (NSString*)getRandomStringWithCount:(NSInteger)count
 {
@@ -618,14 +753,14 @@
 //- (NSView *)tableView:(NSTableView *)tableView
 //   viewForTableColumn:(NSTableColumn *)tableColumn
 //                  row:(NSInteger)row {
-//    
+//
 //    // Retrieve to get the @"MyView" from the pool or,
 //    // if no version is available in the pool, load the Interface Builder version
 //    NSTableCellView *result = [tableView makeViewWithIdentifier:@"MyView" owner:self];
-//    
+//
 //    // Set the stringValue of the cell's text field to the nameArray value at row
 //    result.textField.stringValue = [self.numberCodes objectAtIndex:row];
-//    
+//
 //    // Return the result
 //    return result;
 //}

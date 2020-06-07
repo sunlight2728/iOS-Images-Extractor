@@ -4,7 +4,4 @@
    <FileRef
       location = "group:iOSImagesExtractor/iOSImagesExtractor.xcodeproj">
    </FileRef>
-   <FileRef
-      location = "group:CARExtractor/CARExtractor.xcodeproj">
-   </FileRef>
 </Workspace>
